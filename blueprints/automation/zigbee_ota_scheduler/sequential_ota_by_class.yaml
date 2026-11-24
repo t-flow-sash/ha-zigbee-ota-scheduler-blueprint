@@ -1,11 +1,10 @@
 blueprint:
-  name: Zigbee-OTA – mehrere Geräteklassen sequenziell planen
+  name: Zigbee-OTA – Live-Discovery nach priorisierter Geräte-Domain
   description: >-
-    Verwaltet beliebig viele geordnete, logische Geräteklassen in einer einzigen
-    Automation. Jede Klasse besitzt ein Updatefenster und optional ein
-    Stummzeitfenster. Verfügbare update-Entitäten werden global strikt
-    nacheinander installiert; optionale Anwesenheitstracker können neue Starts
-    auf den Zustand home begrenzen.
+    Erkennt Zigbee-Update-Entitäten bei jedem Lauf live über die Home-Assistant-
+    Geräte-Registry. Jedes Gerät gehört zur ersten konfigurierten Domain, die
+    unter seinen Geräte-Entitäten vorkommt. Updates laufen global strikt
+    nacheinander in klassenbezogenen Zeitfenstern.
   domain: automation
   source_url: https://github.com/t-flow-sash/ha-zigbee-ota-scheduler-blueprint/blob/main/blueprints/automation/zigbee_ota_scheduler/sequential_ota_by_class.yaml
   homeassistant:
@@ -14,30 +13,55 @@ blueprint:
     device_classes:
       name: Geräteklassen
       description: >-
-        Geordnete Liste logischer Klassen. Die Klassenreihenfolge und innerhalb
-        jeder Klasse die Reihenfolge der Update-Entitäten bestimmen die
-        Priorität. Die Bezeichnungen dienen nur der Organisation; es findet
-        keine automatische Geräteerkennung statt.
+        Geordnete Domain-Klassen. Die erste konfigurierte Domain, die unter den
+        Entitäten eines Zigbee-Geräts vorkommt, gewinnt. Dadurch wird jedes
+        Update höchstens einer Klasse zugeordnet.
       selector:
         object:
           multiple: true
           label_field: name
-          description_field: update_entities
+          description_field: domain
           fields:
             name:
               label: Klassenname
               required: true
               selector:
                 text:
-            update_entities:
-              label: Update-Entitäten
+            domain:
+              label: Primär-Domain (priorisierte Zuordnung)
               required: true
               selector:
-                entity:
-                  multiple: true
-                  reorder: true
-                  filter:
-                    domain: update
+                select:
+                  custom_value: true
+                  options:
+                    - label: Licht
+                      value: light
+                    - label: Heizung / Klima
+                      value: climate
+                    - label: Schalter
+                      value: switch
+                    - label: Abdeckung / Rollladen
+                      value: cover
+                    - label: Schloss
+                      value: lock
+                    - label: Lüfter
+                      value: fan
+                    - label: Ventil
+                      value: valve
+                    - label: Staubsauger
+                      value: vacuum
+                    - label: Mediaplayer
+                      value: media_player
+                    - label: Sirene
+                      value: siren
+                    - label: Binärsensor
+                      value: binary_sensor
+                    - label: Sensor
+                      value: sensor
+                    - label: Taster
+                      value: button
+                    - label: Nummer
+                      value: number
             update_start:
               label: Updatefenster – Start
               required: true
@@ -101,14 +125,61 @@ actions:
     repeat:
       for_each: "{{ device_classes }}"
       sequence:
-        - alias: Äußere Klasse vor dem inneren Repeat sichern
+        - alias: Äußere Klasse und Prioritätsindex vor dem inneren Repeat sichern
           variables:
             current_class: "{{ repeat.item }}"
+            current_class_index: "{{ repeat.index }}"
 
-        - alias: Gesicherte Klassenfelder für den inneren Repeat bereitstellen
+        - alias: Klassenfelder und live erkannte Update-Entitäten bereitstellen
           variables:
             class_name: "{{ current_class['name'] }}"
-            class_update_entities: "{{ current_class['update_entities'] }}"
+            class_domain: "{{ current_class['domain'] | string | lower | trim }}"
+            class_update_entities: >-
+              {% set result = namespace(entities=[]) %}
+              {% for update_state in states.update | sort(attribute='entity_id') %}
+                {% set update_entity = update_state.entity_id %}
+                {% set update_device_id = device_id(update_entity) %}
+                {% if update_device_id %}
+                  {% set identifiers = device_attr(update_device_id, 'identifiers') %}
+                  {% set zigbee = namespace(matched=false) %}
+                  {% if identifiers is iterable and identifiers is not string %}
+                    {% for identifier in identifiers %}
+                      {% if identifier is iterable and identifier is not string and identifier | length >= 1 %}
+                        {% set identifier_namespace = identifier[0] | string | lower %}
+                        {% set value = identifier[1] | string | lower if identifier | length >= 2 else '' %}
+                        {% if identifier_namespace == 'zha' or (identifier_namespace == 'mqtt' and 'zigbee2mqtt' in value) %}
+                          {% set zigbee.matched = true %}
+                        {% endif %}
+                      {% endif %}
+                    {% endfor %}
+                  {% endif %}
+                  {% if zigbee.matched %}
+                    {% set sibling_domains = namespace(values=[]) %}
+                    {% set siblings = device_entities(update_device_id) %}
+                    {% if siblings is iterable and siblings is not string %}
+                      {% for sibling in siblings %}
+                        {% if sibling is string and '.' in sibling %}
+                          {% set sibling_domain = sibling.split('.', 1)[0] | lower %}
+                          {% if sibling_domain not in sibling_domains.values %}
+                            {% set sibling_domains.values = sibling_domains.values + [sibling_domain] %}
+                          {% endif %}
+                        {% endif %}
+                      {% endfor %}
+                    {% endif %}
+                    {% set owner = namespace(index=none) %}
+                    {% for configured_class in device_classes %}
+                      {% set configured_domain = configured_class['domain'] | string | lower | trim %}
+                      {% if owner.index is none and configured_domain in sibling_domains.values %}
+                        {% set owner.index = loop.index %}
+                      {% endif %}
+                    {% endfor %}
+                    {% if owner.index == (current_class_index | int) and update_entity not in result.entities %}
+                      {% set result.entities = result.entities + [update_entity] %}
+                    {% endif %}
+                  {% endif %}
+                {% endif %}
+              {% endfor %}
+              {{ result.entities }}
             class_update_start: "{{ current_class['update_start'] }}"
             class_update_end: "{{ current_class['update_end'] }}"
             class_quiet_enabled: "{{ current_class.get('quiet_enabled', false) }}"
@@ -141,7 +212,7 @@ actions:
                 {% endfor %}
                 {{ in_update and not in_quiet and trackers.all_home }}
           then:
-            - alias: Entitäten dieser Klasse strikt nacheinander verarbeiten
+            - alias: Live erkannte Entitäten dieser Klasse strikt nacheinander verarbeiten
               repeat:
                 for_each: "{{ class_update_entities }}"
                 sequence:
