@@ -1,101 +1,190 @@
 blueprint:
-  name: Zigbee-OTA je Geräteklasse – sequenziell im Zeitfenster
+  name: Zigbee-OTA – mehrere Geräteklassen sequenziell planen
   description: >-
-    Installiert verfügbare Updates einer frei benannten, logischen Geräteklasse
-    täglich in einem Zeitfenster. Die explizit gewählten update-Entitäten werden
-    strikt nacheinander verarbeitet. Eine eigene Blueprint-Instanz pro
-    Geräteklasse verwenden.
+    Verwaltet beliebig viele geordnete, logische Geräteklassen in einer einzigen
+    Automation. Jede Klasse besitzt ein Updatefenster und optional ein
+    Stummzeitfenster. Verfügbare update-Entitäten werden global strikt
+    nacheinander installiert; optionale Anwesenheitstracker können neue Starts
+    auf den Zustand home begrenzen.
   domain: automation
   source_url: https://github.com/t-flow-sash/ha-zigbee-ota-scheduler-blueprint/blob/main/blueprints/automation/zigbee_ota_scheduler/sequential_ota_by_class.yaml
   homeassistant:
-    min_version: 2024.10.0
+    min_version: 2025.8.0
   input:
-    device_class_name:
-      name: Geräteklasse / Bezeichnung
+    device_classes:
+      name: Geräteklassen
       description: >-
-        Frei wählbare logische Gruppe, zum Beispiel „Zigbee-Lampen“ oder
-        „Batteriesensoren“. Sie dient nur der Organisation und führt keine
-        automatische Geräteerkennung durch.
+        Geordnete Liste logischer Klassen. Die Klassenreihenfolge und innerhalb
+        jeder Klasse die Reihenfolge der Update-Entitäten bestimmen die
+        Priorität. Die Bezeichnungen dienen nur der Organisation; es findet
+        keine automatische Geräteerkennung statt.
       selector:
-        text:
-    update_entities:
-      name: Update-Entitäten
+        object:
+          multiple: true
+          label_field: name
+          description_field: update_entities
+          fields:
+            name:
+              label: Klassenname
+              required: true
+              selector:
+                text:
+            update_entities:
+              label: Update-Entitäten
+              required: true
+              selector:
+                entity:
+                  multiple: true
+                  reorder: true
+                  filter:
+                    domain: update
+            update_start:
+              label: Updatefenster – Start
+              required: true
+              selector:
+                time:
+            update_end:
+              label: Updatefenster – Ende
+              required: true
+              selector:
+                time:
+            quiet_enabled:
+              label: Stummzeitfenster aktivieren
+              selector:
+                boolean:
+            quiet_start:
+              label: Stummzeitfenster – Start
+              selector:
+                time:
+            quiet_end:
+              label: Stummzeitfenster – Ende
+              selector:
+                time:
+    presence_trackers:
+      name: Anwesenheitstracker
       description: >-
-        Geordnete Liste der update-Entitäten dieser Geräteklasse. Die Reihenfolge
-        bestimmt die Installationsreihenfolge.
+        Optional. Wenn Tracker gewählt sind, müssen vor jedem neuen Update alle
+        exakt den Zustand home haben. Eine leere Liste deaktiviert dieses Gate.
+      default: []
       selector:
         entity:
           multiple: true
           reorder: true
           filter:
-            domain: update
-    start_time:
-      name: Startzeit
-      description: Täglicher Start und inklusive Untergrenze des Zeitfensters.
-      default: "01:00:00"
-      selector:
-        time:
-    end_time:
-      name: Endzeit
-      description: >-
-        Exklusive Obergrenze. Eine frühere Endzeit als Startzeit bildet ein
-        Fenster über Mitternacht ab.
-      default: "05:00:00"
-      selector:
-        time:
+            domain: device_tracker
     install_timeout:
       name: Abschluss-Timeout
       description: >-
-        Maximale Wartezeit auf den Zustand „kein Update verfügbar“, nachdem
-        update.install zurückgekehrt ist. Bei Timeout wird der gesamte Lauf
-        sicher beendet; es startet kein weiteres Update.
+        Maximale Wartezeit auf den bestätigten Zustand off nach update.install.
+        Bei Timeout oder Servicefehler endet der gesamte Lauf sicher, sodass
+        kein möglicherweise paralleles OTA gestartet wird.
       default:
         hours: 1
       selector:
         duration:
           enable_day: false
-    inter_device_delay:
-      name: Pause zwischen Geräten
-      description: Pause nach einem erfolgreich abgeschlossenen Update.
-      default:
-        seconds: 30
-      selector:
-        duration:
-          enable_day: false
 
 triggers:
-  - trigger: time
-    at: !input start_time
+  - trigger: time_pattern
+    minutes: "/1"
+  - trigger: homeassistant
+    event: start
 
 conditions: []
 
-actions:
-  - alias: Geräte dieser logischen Klasse strikt nacheinander verarbeiten
-    repeat:
-      for_each: !input update_entities
-      sequence:
-        - alias: Vor jedem neuen Update das aktuelle Zeitfenster prüfen
-          condition: time
-          after: !input start_time
-          before: !input end_time
+variables:
+  device_classes: !input device_classes
+  presence_trackers: !input presence_trackers
 
-        - alias: Nur ein tatsächlich verfügbares Update installieren
+actions:
+  - alias: Klassen in konfigurierter Priorität seriell prüfen
+    repeat:
+      for_each: "{{ device_classes }}"
+      sequence:
+        - alias: Äußere Klasse vor dem inneren Repeat sichern
+          variables:
+            current_class: "{{ repeat.item }}"
+
+        - alias: Gesicherte Klassenfelder für den inneren Repeat bereitstellen
+          variables:
+            class_name: "{{ current_class['name'] }}"
+            class_update_entities: "{{ current_class['update_entities'] }}"
+            class_update_start: "{{ current_class['update_start'] }}"
+            class_update_end: "{{ current_class['update_end'] }}"
+            class_quiet_enabled: "{{ current_class.get('quiet_enabled', false) }}"
+            class_quiet_start: "{{ current_class.get('quiet_start', '00:00:00') }}"
+            class_quiet_end: "{{ current_class.get('quiet_end', '00:00:00') }}"
+
+        - alias: Nicht erlaubte Klasse überspringen, spätere Klassen weiter prüfen
           if:
             - condition: template
-              value_template: "{{ is_state(repeat.item, 'on') }}"
+              value_template: >-
+                {% set current = now().strftime('%H:%M:%S') %}
+                {% set start = class_update_start | string %}
+                {% set end = class_update_end | string %}
+                {% set in_update =
+                  (start == end)
+                  or (start < end and start <= current < end)
+                  or (start > end and (current >= start or current < end)) %}
+                {% set quiet_start = class_quiet_start | string %}
+                {% set quiet_end = class_quiet_end | string %}
+                {% set in_quiet = (class_quiet_enabled | bool) and (
+                  (quiet_start == quiet_end)
+                  or (quiet_start < quiet_end and quiet_start <= current < quiet_end)
+                  or (quiet_start > quiet_end and (current >= quiet_start or current < quiet_end))
+                ) %}
+                {% set trackers = namespace(all_home=true) %}
+                {% for tracker in presence_trackers %}
+                  {% if not is_state(tracker, 'home') %}
+                    {% set trackers.all_home = false %}
+                  {% endif %}
+                {% endfor %}
+                {{ in_update and not in_quiet and trackers.all_home }}
           then:
-            - alias: Update ausschließlich für das aktuelle Gerät starten
-              action: update.install
-              target:
-                entity_id: "{{ repeat.item }}"
+            - alias: Entitäten dieser Klasse strikt nacheinander verarbeiten
+              repeat:
+                for_each: "{{ class_update_entities }}"
+                sequence:
+                  - alias: Aktuelle Entität vor weiteren Aktionen sichern
+                    variables:
+                      current_update_entity: "{{ repeat.item }}"
 
-            - alias: Auf bestätigten Abschluss warten und bei Unsicherheit stoppen
-              wait_template: "{{ is_state(repeat.item, 'off') }}"
-              timeout: !input install_timeout
-              continue_on_timeout: false
+                  - alias: Alle Gates unmittelbar vor jedem neuen OTA erneut prüfen
+                    if:
+                      - condition: template
+                        value_template: >-
+                          {% set current = now().strftime('%H:%M:%S') %}
+                          {% set start = class_update_start | string %}
+                          {% set end = class_update_end | string %}
+                          {% set in_update =
+                            (start == end)
+                            or (start < end and start <= current < end)
+                            or (start > end and (current >= start or current < end)) %}
+                          {% set quiet_start = class_quiet_start | string %}
+                          {% set quiet_end = class_quiet_end | string %}
+                          {% set in_quiet = (class_quiet_enabled | bool) and (
+                            (quiet_start == quiet_end)
+                            or (quiet_start < quiet_end and quiet_start <= current < quiet_end)
+                            or (quiet_start > quiet_end and (current >= quiet_start or current < quiet_end))
+                          ) %}
+                          {% set trackers = namespace(all_home=true) %}
+                          {% for tracker in presence_trackers %}
+                            {% if not is_state(tracker, 'home') %}
+                              {% set trackers.all_home = false %}
+                            {% endif %}
+                          {% endfor %}
+                          {{ in_update and not in_quiet and trackers.all_home
+                             and is_state(current_update_entity, 'on') }}
+                    then:
+                      - alias: Update ausschließlich für die aktuelle Entität starten
+                        action: update.install
+                        target:
+                          entity_id: "{{ current_update_entity }}"
 
-            - alias: Funknetz und Gerät vor dem nächsten Update entlasten
-              delay: !input inter_device_delay
+                      - alias: Auf bestätigten Abschluss warten und bei Unsicherheit stoppen
+                        wait_template: "{{ is_state(current_update_entity, 'off') }}"
+                        timeout: !input install_timeout
+                        continue_on_timeout: false
 
 mode: single
 max_exceeded: silent

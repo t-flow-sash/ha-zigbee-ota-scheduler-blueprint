@@ -6,16 +6,31 @@ homeassistant:
   unit_system: metric
   time_zone: UTC
 
+# One automation instance owns two ordered logical classes.
 automation:
-  - alias: Validate sequential Zigbee OTA blueprint
+  - alias: Validate multi-class sequential Zigbee OTA blueprint
     use_blueprint:
       path: zigbee_ota_scheduler/sequential_ota_by_class.yaml
       input:
-        device_class_name: Testklasse
-        update_entities: []
-        start_time: "01:00:00"
-        end_time: "05:00:00"
+        device_classes:
+          - name: Lamps
+            update_entities:
+              - update.test_lamp_firmware
+              - update.test_plug_firmware
+            update_start: "23:30:00"
+            update_end: "05:00:00"
+            quiet_enabled: true
+            quiet_start: "00:30:00"
+            quiet_end: "01:30:00"
+          - name: Sensors
+            update_entities:
+              - update.test_sensor_firmware
+            update_start: "06:00:00"
+            update_end: "08:00:00"
+            quiet_enabled: false
+            quiet_start: "00:00:00"
+            quiet_end: "00:00:00"
+        presence_trackers:
+          - device_tracker.test_person
         install_timeout:
           minutes: 30
-        inter_device_delay:
-          seconds: 5
