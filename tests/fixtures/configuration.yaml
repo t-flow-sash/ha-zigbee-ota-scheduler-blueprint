@@ -1,0 +1,21 @@
+homeassistant:
+  name: Blueprint validation
+  latitude: 0
+  longitude: 0
+  elevation: 0
+  unit_system: metric
+  time_zone: UTC
+
+automation:
+  - alias: Validate sequential Zigbee OTA blueprint
+    use_blueprint:
+      path: zigbee_ota_scheduler/sequential_ota_by_class.yaml
+      input:
+        device_class_name: Testklasse
+        update_entities: []
+        start_time: "01:00:00"
+        end_time: "05:00:00"
+        install_timeout:
+          minutes: 30
+        inter_device_delay:
+          seconds: 5
