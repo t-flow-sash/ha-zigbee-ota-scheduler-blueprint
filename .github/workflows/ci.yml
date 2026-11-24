@@ -44,11 +44,12 @@ jobs:
         run: pytest -q
 
       - name: Install Home Assistant validator
-        run: >-
-          python -m pip install
-          homeassistant==${{ matrix.homeassistant }}
-          colorlog==${{ matrix.colorlog }}
-          "${{ matrix.pycares }}"
+        run: |
+          python -m venv /tmp/ha-validator
+          /tmp/ha-validator/bin/python -m pip install \
+            homeassistant==${{ matrix.homeassistant }} \
+            colorlog==${{ matrix.colorlog }} \
+            "${{ matrix.pycares }}"
 
       - name: Validate a real blueprint automation with Home Assistant
         run: |
@@ -58,7 +59,7 @@ jobs:
           cp tests/fixtures/configuration.yaml /tmp/ha-config/configuration.yaml
           cp blueprints/automation/zigbee_ota_scheduler/sequential_ota_by_class.yaml \
             /tmp/ha-config/blueprints/automation/zigbee_ota_scheduler/
-          hass --script check_config -c /tmp/ha-config 2>&1 | tee /tmp/ha-check.log
+          /tmp/ha-validator/bin/hass --script check_config -c /tmp/ha-config 2>&1 | tee /tmp/ha-check.log
           if grep -q "ERROR:" /tmp/ha-check.log; then
             echo "Home Assistant reported configuration errors"
             exit 1
