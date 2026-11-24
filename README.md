@@ -3,7 +3,7 @@
 [![CI](https://github.com/t-flow-sash/ha-zigbee-ota-scheduler-blueprint/actions/workflows/ci.yml/badge.svg)](https://github.com/t-flow-sash/ha-zigbee-ota-scheduler-blueprint/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Ein Home-Assistant-Automation-Blueprint, der verfügbare Zigbee-Firmwareupdates in einem täglichen Zeitfenster **streng nacheinander** installiert. Jede Instanz verwaltet eine frei benannte logische Geräteklasse und eine explizit sortierte Liste von `update`-Entitäten.
+Mit diesem Blueprint verwaltet eine Blueprint-Instanz beliebig viele logische Zigbee-Geräteklassen und installiert verfügbare Firmwareupdates **global streng nacheinander**. Jede Klasse hat eine eigene geordnete Liste von `update`-Entitäten, ein Updatefenster und optional ein Stummzeitfenster. Ein optionales All-trackers-home-Gate verhindert neue Starts, wenn nicht alle ausgewählten Personen zuhause sind.
 
 [![Blueprint in Home Assistant importieren](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Ft-flow-sash%2Fha-zigbee-ota-scheduler-blueprint%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fzigbee_ota_scheduler%2Fsequential_ota_by_class.yaml)
 
@@ -13,88 +13,131 @@ Direkter Import-Link:
 https://github.com/t-flow-sash/ha-zigbee-ota-scheduler-blueprint/blob/main/blueprints/automation/zigbee_ota_scheduler/sequential_ota_by_class.yaml
 ```
 
+## Voraussetzungen
+
+- **Home Assistant 2025.8.0 oder neuer.** `fields` und `multiple` für den offiziellen `object`-Selector kamen mit 2025.7; die hier zusätzlich benötigte sortierbare Mehrfachauswahl (`reorder`) ist ab 2025.8 verfügbar.
+- Die Zigbee-Integration muss pro Gerät eine installierbare Home-Assistant-`update`-Entität bereitstellen.
+
 ## Eigenschaften
 
-- täglicher Start zu einer konfigurierbaren Uhrzeit
-- normales oder über Mitternacht laufendes Zeitfenster
-- explizite, geordnete Liste von `update`-Entitäten
-- nur Zustand `on` wird installiert; `off`, `unknown`, `unavailable` und nicht vorhandene Entitäten werden übersprungen
-- genau ein `update.install`-Aufruf pro Iteration
-- Abschluss-Wait und konfigurierbarer Timeout
-- fail-closed: Timeout oder Servicefehler beendet den Restlauf, damit kein möglicherweise paralleles OTA beginnt
-- optionale Pause zwischen erfolgreich abgeschlossenen Updates
-- `mode: single` verhindert überlappende Läufe derselben Blueprint-Instanz
-- ein bereits laufendes Update wird beim Erreichen der Endzeit nicht abgebrochen; die Zeit wird erst vor dem nächsten Gerät erneut geprüft
+- beliebig viele Klassen in einer Automation über den offiziellen `object`-Selector mit `multiple: true` und `fields`
+- eigene Update- und optionale Stummzeitfenster je Klasse, jeweils mit korrektem Mitternachtsüberlauf
+- Klassenreihenfolge und Entity-Reihenfolge bilden gemeinsam die Priorität
+- minütliche Prüfung plus Prüfung beim Home-Assistant-Start; dadurch maximal etwa eine Minute Startlatenz
+- Installation nur bei exakt `on`; `off`, `unknown`, `unavailable` und fehlende Entitäten starten kein OTA
+- optionales All-trackers-home-Gate: Sind Tracker konfiguriert, müssen **ALLE** exakt `home` sein
+- `update.install` und direkt anschließend Warten auf den bestätigten Zustand `off`
+- globaler Abschluss-Timeout; Timeout oder Servicefehler beendet den Lauf fail-closed
+- `mode: single` verhindert innerhalb dieser einen Instanz jedes parallele OTA
+- ein bereits laufendes OTA wird bei Fensterende, Stummzeitbeginn oder Abwesenheit nicht hart abgebrochen; vor dem nächsten Gerät gelten alle Gates erneut
 
 ## Installation
 
 ### Über den Import-Button
 
-Den Button oben öffnen, Blueprint importieren und anschließend eine Automation daraus erstellen.
+Den Button oben öffnen, Blueprint importieren und anschließend **eine** Automation daraus erstellen. Alle gewünschten Klassen werden in dieser Automation konfiguriert.
 
 ### Manuell
 
-1. Datei herunterladen:
-
-   ```text
-   blueprints/automation/zigbee_ota_scheduler/sequential_ota_by_class.yaml
-   ```
-
+1. Die Datei `blueprints/automation/zigbee_ota_scheduler/sequential_ota_by_class.yaml` herunterladen.
 2. Unter demselben relativen Pfad in das Home-Assistant-Konfigurationsverzeichnis kopieren.
 3. In Home Assistant **Einstellungen → Automatisierungen & Szenen → Blueprints** öffnen und die Blueprint-Liste neu laden.
-4. Für jede logische Geräteklasse eine eigene Automation erstellen.
+4. Eine Automation erstellen und dort alle Klassen in der gewünschten Priorität eintragen.
 
 ## Konfiguration
 
+### Globale Eingaben
+
 | Eingabe | Bedeutung |
 |---|---|
-| Geräteklasse / Bezeichnung | Freier logischer Gruppenname, z. B. `Zigbee-Lampen` |
+| Geräteklassen | Geordnete, beliebig erweiterbare Liste der Klassenobjekte |
+| Anwesenheitstracker | Optionale Liste von `device_tracker.*`; leer deaktiviert das Gate |
+| Abschluss-Timeout | Maximale Wartezeit auf `off`, nachdem `update.install` zurückgekehrt ist |
+
+### Felder je Klasse
+
+| Feld | Bedeutung |
+|---|---|
+| Klassenname | Frei benannte logische Gruppe; nur Metadaten, keine automatische Erkennung |
 | Update-Entitäten | Geordnete Liste der zugehörigen `update.*`-Entitäten |
-| Startzeit | Täglicher Trigger und inklusive Fenstergrenze |
-| Endzeit | Exklusive Fenstergrenze |
-| Abschluss-Timeout | Maximale Wartezeit auf den bestätigten Zustand `off`, nachdem `update.install` zurückgekehrt ist |
-| Pause | Wartezeit nach erfolgreichem Abschluss vor dem nächsten Listeneintrag |
+| Updatefenster Start/Ende | Inklusive Start- und exklusive Endgrenze für neue OTA-Starts |
+| Stummzeit aktiv | Schaltet das Ausschlussfenster für diese Klasse ein |
+| Stummzeit Start/Ende | Inklusive Start- und exklusive Endgrenze, in der kein neues OTA startet |
 
-### Beispiel
+### Zeitfenster-Semantik
 
-Erstelle eine Blueprint-Automation mit:
+- `Start < Ende`: normales Fenster am selben Tag, zum Beispiel `01:00` bis `05:00`.
+- `Start > Ende`: Fenster über Mitternacht, zum Beispiel `23:30` bis `05:00`.
+- `start == end`: Das Updatefenster gilt ganztägig. Ein **aktiviertes** Stummzeitfenster mit gleichen Grenzen gilt ebenfalls ganztägig und blockiert damit alle neuen Starts. Ist die Stummzeit deaktiviert, werden ihre Zeiten ignoriert.
+- Alle Endgrenzen sind exklusiv. Ein schon laufendes OTA darf sauber fertig werden.
 
-- **Geräteklasse:** `Zigbee-Lampen`
-- **Update-Entitäten:**
-  1. `update.flur_lampe_firmware`
-  2. `update.wohnzimmer_lampe_firmware`
-  3. `update.schlafzimmer_lampe_firmware`
-- **Start:** `23:30:00`
-- **Ende:** `05:00:00`
-- **Timeout:** `01:00:00`
-- **Pause:** `00:00:30`
+### Tracker-Semantik
 
-Das Zeitfenster läuft in diesem Beispiel korrekt über Mitternacht. Um 05:00 Uhr wird kein neues Update mehr gestartet. Ein kurz davor begonnenes Update darf sauber enden.
+Eine leere Tracker-Liste deaktiviert das Gate. Sobald mindestens ein Tracker gewählt ist, müssen **ALLE** ausgewählten Entitäten unmittelbar vor jedem neuen OTA exakt den Zustand `home` haben. `not_home`, `unknown`, `unavailable` und eine fehlende Entität sind fail-closed und verhindern einen neuen Start. Nach Abschluss des laufenden OTA werden Fenster, Stummzeit und Tracker vor dem nächsten Gerät erneut ausgewertet.
 
-## Architektur und Semantik
+## Beispiel: zwei Klassen in einer Instanz
 
-Home Assistant stellt für Zigbee-Geräte **keine integrationsübergreifend einheitliche, automatisch discoverbare Geräteklasse im Sinne dieses Schedulers** bereit. Deshalb ist „Geräteklasse“ hier bewusst eine logische Gruppierung: Eine Blueprint-Instanz pro Gruppe, deren `update`-Entitäten explizit ausgewählt werden.
+```yaml
+use_blueprint:
+  path: zigbee_ota_scheduler/sequential_ota_by_class.yaml
+  input:
+    device_classes:
+      - name: Zigbee-Lampen
+        update_entities:
+          - update.flur_lampe_firmware
+          - update.wohnzimmer_lampe_firmware
+        update_start: "23:30:00"
+        update_end: "05:00:00"
+        quiet_enabled: true
+        quiet_start: "00:30:00"
+        quiet_end: "01:30:00"
+      - name: Batteriesensoren
+        update_entities:
+          - update.keller_sensor_firmware
+          - update.garage_sensor_firmware
+        update_start: "06:00:00"
+        update_end: "08:00:00"
+        quiet_enabled: false
+        quiet_start: "00:00:00"
+        quiet_end: "00:00:00"
+    presence_trackers:
+      - device_tracker.alex_phone
+      - device_tracker.sam_phone
+    install_timeout:
+      hours: 1
+```
 
-Der Blueprint ist integrationsagnostisch und ruft ausschließlich den offiziellen Home-Assistant-Vertrag `update.install` auf. Damit kann er mit ZHA, Zigbee2MQTT oder anderen Integrationen funktionieren, **wenn** diese eine kompatible und installierbare Home-Assistant-`update`-Entität bereitstellen. Es werden keine herstellerspezifischen Fähigkeiten zugesichert.
+Sind mehrere Klassen gleichzeitig erlaubt, wird zuerst die frühere Klasse vollständig in ihrer Entity-Reihenfolge geprüft. Danach folgt die nächste Klasse. Entitäten ohne verfügbares Update werden übersprungen.
 
-Die Liste läuft über `repeat.for_each`; dessen Sequenz ist seriell. Vor jeder neuen Installation prüft eine Home-Assistant-Zeitbedingung das Fenster. Die Zeitbedingung unterstützt laut HA-Dokumentation auch Fenster über Mitternacht und ist am Ende exklusiv. Nur der exakte Update-Zustand `on` betritt den Installationszweig. Nach `update.install` wartet der Blueprint auf `off`. Ein Timeout ist fail-closed und verhindert den Start des nächsten Geräts.
+## Architektur und Grenzen
 
-## Grenzen
+Der Blueprint kopiert `device_classes` und die Tracker-Eingabe zunächst in Automation-Variablen. Ein äußerer serieller `repeat` verarbeitet Klassen; vor dem inneren `repeat` werden die Klassenfelder gesichert, damit dessen eigenes `repeat.item` die äußeren Werte nicht überschreibt. Ein innerer serieller `repeat` prüft unmittelbar vor jeder Installation Updatefenster, Stummzeit, alle Tracker und den exakten Zustand `on`.
 
-- `mode: single` gilt pro erzeugter Automation. Mehrere Blueprint-Instanzen können parallel laufen. Verwende daher disjunkte Entity-Listen und überlappungsfreie Zeitfenster, wenn auch klassenübergreifend keine parallelen OTAs gewünscht sind.
-- Ein Home-Assistant-Neustart oder Automation-Reload beendet einen aktiven Automationslauf; Scriptläufe sind nicht persistent. Der nächste reguläre Versuch erfolgt zur nächsten Startzeit. Das verhindert einen blinden doppelten Wiederanlauf, bietet aber keine Checkpoint-Wiederaufnahme.
-- Der Timeout beginnt erst, nachdem der `update.install`-Aufruf zurückgekehrt ist. Home Assistant kann einen integrationsintern blockierenden Installationsaufruf nicht generisch hart abbrechen.
-- Einige Integrationen aktualisieren den Zustand nach der Installation verzögert. Dann wartet der Blueprint bis `off` oder beendet den Batch nach dem Timeout.
-- `start_time` und `end_time` sollten verschieden sein. Für ein bewusst ganztägiges Fenster ist dieser Blueprint nicht gedacht.
-- Der Blueprint prüft nicht automatisch, ob eine Entität tatsächlich Zigbee gehört; die Auswahl liegt beim Benutzer.
+Der Blueprint nutzt ausschließlich den Home-Assistant-Vertrag `update.install`. Er ist damit für ZHA, Zigbee2MQTT und andere Integrationen geeignet, **sofern** diese eine kompatible Update-Entität liefern. Daraus folgen keine Hersteller- oder Kompatibilitätszusagen.
+
+- `mode: single` serialisiert nur die eine erzeugte Automation. Erstelle nicht zusätzlich eine zweite Instanz mit denselben Geräten, wenn globale Serialisierung gewünscht ist.
+- Minutenticks während eines laufenden OTA werden durch `mode: single` verworfen. Nach dem Abschluss prüft spätestens der nächste Minutentick erneut.
+- Home-Assistant-Neustart oder Automation-Reload beendet aktive Automationsläufe und Waits; es gibt keine persistente Checkpoint-Wiederaufnahme.
+- Der Timeout beginnt erst, nachdem `update.install` zurückgekehrt ist. Ein integrationsintern blockierender Serviceaufruf lässt sich generisch nicht hart abbrechen.
+- Der Blueprint prüft nicht, ob eine Entität tatsächlich zu Zigbee gehört; die Auswahl liegt beim Benutzer.
+
+## Migration von der bisherigen Version
+
+Die bisherigen Eingaben `device_class_name`, `update_entities`, `start_time`, `end_time` und `inter_device_delay` existieren nicht mehr. Bestehende erzeugte Automationen müssen in der UI neu konfiguriert werden:
+
+1. Eine einzige Automation aus dem aktualisierten Blueprint verwenden.
+2. Jede bisherige Instanz als Klassenobjekt in **Geräteklassen** übertragen.
+3. Bisherige Start-/Endzeiten in `update_start`/`update_end` übernehmen.
+4. Optional Stummzeit und Anwesenheitstracker konfigurieren.
+5. Alte, nun redundante Blueprint-Automationen erst nach erfolgreicher Prüfung deaktivieren oder entfernen.
 
 ## Sicherheit und Batterie
 
-- Netzversorgte Zigbee-Router und der Coordinator sollten während des Fensters stabil erreichbar bleiben.
-- Batteriegeräte können für OTA lange wach bleiben und erheblich Energie verbrauchen. Batterie vorher ausreichend laden bzw. wechseln und Herstellerhinweise beachten.
-- Keine Geräte ausschalten, zurücksetzen oder aus dem Zigbee-Netz entfernen, solange ein Update läuft.
-- Mit wenigen, unkritischen Geräten beginnen und Hersteller-/Integrationshinweise zu Firmware-Risiken prüfen.
-- Timeout nicht aggressiv kurz wählen: Ein OTA kann je nach Gerät und Mesh deutlich länger dauern.
+- Coordinator und netzversorgte Zigbee-Router während des Fensters stabil erreichbar halten.
+- Batteriegeräte können bei OTA lange wach bleiben und viel Energie verbrauchen; vorher ausreichend laden beziehungsweise Batterie wechseln.
+- Geräte während eines Updates nicht ausschalten, zurücksetzen oder aus dem Netz entfernen.
+- Mit wenigen unkritischen Geräten beginnen und Integrations-/Herstellerhinweise prüfen.
+- Den Abschluss-Timeout nicht aggressiv kurz wählen.
 
 ## Entwicklung und Tests
 
@@ -104,16 +147,15 @@ python3 -m venv .venv
 .venv/bin/pytest -q
 ```
 
-Die Tests parsen das YAML inklusive `!input` und prüfen statisch unter anderem Sequenz, Zeitfenster-Gate, `mode: single`, `update.install`, exaktes Target, Abschluss-Wait und fail-closed Timeout. GitHub Actions führt dieselben Prüfungen aus und lädt zusätzlich eine reale Beispielautomation über `hass --script check_config` in Home Assistant.
+Die statischen Tests prüfen unter anderem Object-Selector-Felder, mehrere Klassen, beide Trigger, verschachtelte Serialisierung, All-home-Gate, normale/ganztägige/Mitternachtsfenster, Stummzeit, exakten `on`-Start, direkten Abschluss-Wait, Timeout und `mode: single`. GitHub Actions instanziiert außerdem zwei Klassen mit Stummzeit und Tracker und führt `hass --script check_config` aus.
 
 ## Referenzen
 
+- [Home Assistant: Blueprint selectors](https://www.home-assistant.io/docs/blueprint/selectors/)
+- [Home Assistant Core 2025.7: Object selector fields/multiple](https://github.com/home-assistant/core/pull/147215)
 - [Home Assistant: `update.install`](https://www.home-assistant.io/actions/update.install/)
-- [Home Assistant: Update-Integration und Zustände](https://www.home-assistant.io/integrations/update/)
-- [Home Assistant Developer: Update entity](https://developers.home-assistant.io/docs/core/entity/update/)
-- [Home Assistant: Time condition](https://www.home-assistant.io/conditions/time/)
+- [Home Assistant: Update-Integration](https://www.home-assistant.io/integrations/update/)
 - [Home Assistant: Automation modes](https://www.home-assistant.io/docs/automation/modes/)
-- [Home Assistant: Blueprint schema](https://www.home-assistant.io/docs/blueprint/schema/)
 
 ## Lizenz
 
